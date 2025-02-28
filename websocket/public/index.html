@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enhanced Group Chat App</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <div class="app-header">
+            <h2>Enhanced Group Chat App</h2>
+        </div>
+        
+        <div class="login-container" id="login-container">
+            <input type="text" id="username" placeholder="Enter your name">
+            <div class="group-selection">
+                <h3>Select a Group</h3>
+                <div class="group-options">
+                    <div class="group-option" data-group="group1">
+                        <i class="fas fa-users"></i>
+                        <span>Group 1</span>
+                    </div>
+                    <div class="group-option" data-group="group2">
+                        <i class="fas fa-users"></i>
+                        <span>Group 2</span>
+                    </div>
+                    <div class="group-option" data-group="group3">
+                        <i class="fas fa-users"></i>
+                        <span>Group 3</span>
+                    </div>
+                </div>
+            </div>
+            <button class="btn btn-primary" onclick="joinChat()">Join Chat</button>
+        </div>
+        
+        <div id="chat-container" style="display:none;">
+            <div class="chat-info">
+                <div id="current-group"></div>
+                <div id="user-list"></div>
+            </div>
+            
+            <div id="chat-box"></div>
+            <div id="typing"></div>
+            
+            <div id="replying-to-container" style="display:none;" class="replying-to">
+                <div>
+                    <small>Replying to </small>
+                    <span id="reply-username"></span>: 
+                    <span id="reply-text"></span>
+                </div>
+                <div class="cancel-reply" onclick="cancelReply()">
+                    <i class="fas fa-times"></i>
+                </div>
+            </div>
+            
+            <div class="message-input-container">
+                <input type="text" id="message-input" placeholder="Type a message...">
+                <button id="send-btn">
+                    <i class="fas fa-paper-plane"></i>
+                </button>
+            </div>
+            
+            <div class="control-panel">
+                <button id="leave-btn" class="btn btn-danger" onclick="leaveChat()">Leave Chat</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Reaction menu (hidden by default) -->
+    <div id="reaction-menu" class="reaction-menu">
+        <span class="reaction-btn" data-emoji="👍">👍</span>
+        <span class="reaction-btn" data-emoji="❤️">❤️</span>
+        <span class="reaction-btn" data-emoji="😂">😂</span>
+        <span class="reaction-btn" data-emoji="😮">😮</span>
+        <span class="reaction-btn" data-emoji="😢">😢</span>
+        <span class="reaction-btn" data-emoji="👏">👏</span>
+    </div>
+    
+    <script>
+        const socket = io("http://localhost:3000");
+        let username = "";
+        let selectedGroup = "";
+        let replyingTo = null; // Store message we're replying to
+        let longPressTimer;
+        let touchStartX = 0;
+        
+        // Set up group selection
+        const groupOptions = document.querySelectorAll('.group-option');
+        groupOptions.forEach(option => {
+            option.addEventListener('click', function() {
+                // Remove selected class from all options
+                groupOptions.forEach(opt => opt.classList.remove('selected'));
+                // Add selected class to clicked option
+                this.classList.add('selected');
+                // Store selected group
+                selectedGroup = this.getAttribute('data-group');
+            });
+        });
+        
+        // Handle Enter key on message input
+        document.getElementById("message-input").addEventListener("keypress", (e) => {
+            if (e.key === "Enter") {
+                sendMessage();
+            }
+        });
+        
+        function joinChat() {
+            username = document.getElementById("username").value.trim();
+            if (username && selectedGroup) {
+                socket.emit("join", { username, group: selectedGroup });
+                console.log("Join button clicked");
+            } else {
+                alert("Please enter your name and select a group!");
+            }
+        }
+        
+        socket.on("userJoined", (data) => {
+            document.getElementById("login-container").style.display = "none";
+            document.getElementById("chat-container").style.display = "block";
+            document.getElementById("current-group").innerHTML = `<strong>Current Group:</strong> ${data.group}`;
+            addSystemMessage(`${data.username} joined the chat`);
+            scrollToBottom();
+        });
+        
+        socket.on("updateUsers", (users) => {
+            let userList = "<strong>Online Users:</strong> ";
+            const userArr = Object.values(users);
+            userArr.forEach((user, index) => {
+                userList += `${user.username}${user.lastSeen !== "Online" ? ` (Last seen: ${user.lastSeen})` : " (Online)"}`;
+                if (index < userArr.length - 1) userList += ", ";
+            });
+            document.getElementById("user-list").innerHTML = userList;
+        });
+        
+        function sendMessage() {
+            const messageInput = document.getElementById("message-input");
+            const message = messageInput.value.trim();
+            if (message) {
+                const messageData = { 
+                    username, 
+                    message,
+                    group: selectedGroup,
+                    replyTo: replyingTo
+                };
+                
+                socket.emit("sendMessage", messageData);
+                messageInput.value = "";
+                
+                // Clear reply if there was one
+                if (replyingTo) {
+                    cancelReply();
+                }
+            }
+        }
+        
+        document.getElementById("send-btn").addEventListener("click", sendMessage);
+        
+        document.getElementById("message-input").addEventListener("input", () => {
+            socket.emit("typing", { username, group: selectedGroup });
+            setTimeout(() => socket.emit("stopTyping", { group: selectedGroup }), 2000);
+        });
+        
+        socket.on("userTyping", (data) => {
+            if (data.group === selectedGroup) {
+                document.getElementById("typing").innerText = `${data.username} is typing...`;
+            }
+        });
+        
+        socket.on("userStopTyping", (data) => {
+            if (data.group === selectedGroup) {
+                document.getElementById("typing").innerText = "";
+            }
+        });
+        
+        socket.on("receiveMessage", (data) => {
+            // Only show messages for the current group
+            if (data.group === selectedGroup) {
+                addMessage(data);
+                socket.emit("readMessage", { username, messageId: data.id });
+                scrollToBottom();
+            }
+        });
+        
+        socket.on("userLeft", (data) => {
+            if (data.group === selectedGroup) {
+                addSystemMessage(`${data.username} left the chat`);
+            }
+        });
+        
+        socket.on("messageReaction", (data) => {
+            if (data.group !== selectedGroup) return;
+            
+            const { messageId, reaction, username, count } = data;
+            const messageElement = document.querySelector(`[data-message-id="${messageId}"]`);
+            
+            if (messageElement) {
+                let reactionsContainer = messageElement.querySelector('.message-reactions');
+                if (!reactionsContainer) {
+                    reactionsContainer = document.createElement('div');
+                    reactionsContainer.className = 'message-reactions';
+                    messageElement.appendChild(reactionsContainer);
+                }
+                
+                // Check if reaction already exists
+                const existingReaction = reactionsContainer.querySelector(`[data-emoji="${reaction}"]`);
+                if (existingReaction) {
+                    existingReaction.setAttribute('data-count', count);
+                    existingReaction.innerHTML = `${reaction} <span class="reaction-count">${count}</span>`;
+                } else {
+                    const reactionEl = document.createElement('span');
+                    reactionEl.className = 'reaction';
+                    reactionEl.setAttribute('data-emoji', reaction);
+                    reactionEl.setAttribute('data-count', count);
+                    reactionEl.innerHTML = `${reaction} <span class="reaction-count">${count}</span>`;
+                    reactionsContainer.appendChild(reactionEl);
+                }
+            }
+        });
+        
+        function addMessage(data) {
+            const chatBox = document.getElementById("chat-box");
+            const messageElement = document.createElement('div');
+            messageElement.className = `message ${data.username === username ? 'sent' : 'received'}`;
+            messageElement.setAttribute('data-message-id', data.id);
+            
+            let messageContent = '';
+            
+            // Add reply reference if this message is a reply
+            if (data.replyTo) {
+                messageContent += `
+                <div class="reply-to">
+                    <span class="message-username">${data.replyTo.username}</span>: ${data.replyTo.message.substring(0, 50)}${data.replyTo.message.length > 50 ? '...' : ''}
+                </div>`;
+            }
+            
+            messageContent += `
+                <div class="message-content">${data.message}</div>
+                <div class="message-info">
+                    <span class="message-username">${data.username}</span>
+                    <span class="message-timestamp">${data.timestamp}</span>
+                </div>
+            `;
+            
+            messageElement.innerHTML = messageContent;
+            
+            // Add touch events for mobile
+            messageElement.addEventListener('touchstart', handleTouchStart);
+            messageElement.addEventListener('touchmove', handleTouchMove);
+            messageElement.addEventListener('touchend', handleTouchEnd);
+            
+            // Add mouse events for long press (desktop)
+            messageElement.addEventListener('mousedown', handleMouseDown);
+            messageElement.addEventListener('mouseup', handleMouseUp);
+            messageElement.addEventListener('mouseleave', handleMouseUp);
+            
+            // Add double click for reactions on desktop
+            messageElement.addEventListener('dblclick', function(e) {
+                const messageId = this.getAttribute('data-message-id');
+                socket.emit('addReaction', {
+                    messageId: messageId,
+                    reaction: '👍', // Default reaction on double click
+                    username: username,
+                    group: selectedGroup
+                });
+            });
+            
+            chatBox.appendChild(messageElement);
+        }
+        
+        function addSystemMessage(text) {
+            const chatBox = document.getElementById("chat-box");
+            const systemMsg = document.createElement('div');
+            systemMsg.className = 'system-message';
+            systemMsg.textContent = text;
+            chatBox.appendChild(systemMsg);
+        }
+        
+        function scrollToBottom() {
+            const chatBox = document.getElementById("chat-box");
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+        
+        function showReactionMenu(x, y, messageId) {
+            const menu = document.getElementById("reaction-menu");
+            menu.style.left = `${x}px`;
+            menu.style.top = `${y}px`;
+            menu.classList.add('active');
+            
+            // Set data attribute to track which message we're reacting to
+            menu.setAttribute('data-for-message', messageId);
+            
+            // Add click event listeners to the reaction buttons
+            const reactionButtons = menu.querySelectorAll('.reaction-btn');
+            reactionButtons.forEach(btn => {
+                btn.onclick = function() {
+                    const emoji = this.getAttribute('data-emoji');
+                    const targetMessageId = menu.getAttribute('data-for-message');
+                    
+                    socket.emit('addReaction', {
+                        messageId: targetMessageId,
+                        reaction: emoji,
+                        username: username,
+                        group: selectedGroup
+                    });
+                    
+                    hideReactionMenu();
+                };
+            });
+            
+            // Close menu when clicking outside
+            document.addEventListener('click', hideReactionMenuOutside);
+        }
+        
+        function hideReactionMenu() {
+            const menu = document.getElementById("reaction-menu");
+            menu.classList.remove('active');
+            
+            // Remove the event listeners from reaction buttons
+            const reactionButtons = menu.querySelectorAll('.reaction-btn');
+            reactionButtons.forEach(btn => {
+                btn.onclick = null;
+            });
+            
+            document.removeEventListener('click', hideReactionMenuOutside);
+        }
+        
+        function hideReactionMenuOutside(e) {
+            const menu = document.getElementById("reaction-menu");
+            if (!menu.contains(e.target)) {
+                hideReactionMenu();
+            }
+        }
+        
+        function setReplyTo(messageElement) {
+            // Get message data
+            const messageId = messageElement.getAttribute('data-message-id');
+            const username = messageElement.querySelector('.message-username').textContent;
+            const message = messageElement.querySelector('.message-content').textContent;
+            
+            // Set the reply data
+            replyingTo = {
+                id: messageId,
+                username: username,
+                message: message
+            };
+            
+            // Update UI to show reply
+            document.getElementById('replying-to-container').style.display = 'flex';
+            document.getElementById('reply-username').textContent = username;
+            document.getElementById('reply-text').textContent = message.substring(0, 30) + (message.length > 30 ? '...' : '');
+            
+            // Focus the message input
+            document.getElementById('message-input').focus();
+        }
+        
+        function cancelReply() {
+            replyingTo = null;
+            document.getElementById('replying-to-container').style.display = 'none';
+        }
+        
+        // Touch event handlers for mobile
+        function handleTouchStart(e) {
+            const touch = e.touches[0];
+            touchStartX = touch.clientX;
+            
+            // Start long press timer
+            longPressTimer = setTimeout(() => {
+                // This is a long press - show reaction menu
+                const messageElement = e.currentTarget;
+                const messageId = messageElement.getAttribute('data-message-id');
+                
+                // Position the menu near where the finger is
+                showReactionMenu(
+                    touch.clientX, 
+                    touch.clientY, 
+                    messageId
+                );
+            }, 500);
+        }
+        
+        function handleTouchMove(e) {
+            if (!touchStartX) return;
+            
+            const touch = e.touches[0];
+            const diffX = touchStartX - touch.clientX;
+            
+            // If swiped right more than 50px, show reply UI
+            if (diffX < -50) {
+                e.currentTarget.classList.add('swiping');
+            } else {
+                e.currentTarget.classList.remove('swiping');
+            }
+            
+            // Clear long press timer if user is moving finger
+            clearTimeout(longPressTimer);
+        }
+        
+        function handleTouchEnd(e) {
+            // Clear the long press timer
+            clearTimeout(longPressTimer);
+            
+            const messageElement = e.currentTarget;
+            
+            // If element was being swiped, initiate reply
+            if (messageElement.classList.contains('swiping')) {
+                setReplyTo(messageElement);
+            }
+            
+            // Reset styles
+            messageElement.classList.remove('swiping');
+            touchStartX = 0;
+        }
+        
+        // Mouse event handlers for desktop
+        function handleMouseDown(e) {
+            const messageElement = e.currentTarget;
+            
+            // Start long press timer
+            longPressTimer = setTimeout(() => {
+                // This is a long press - show reaction menu
+                const messageId = messageElement.getAttribute('data-message-id');
+                
+                // Position the menu near the cursor
+                showReactionMenu(
+                    e.clientX,
+                    e.clientY,
+                    messageId
+                );
+            }, 500);
+        }
+        
+        function handleMouseUp() {
+            // Clear the long press timer
+            clearTimeout(longPressTimer);
+        }
+        
+        // Let users reply with right-click on desktop
+        document.addEventListener('contextmenu', function(e) {
+            // Check if the click was on a message
+            let target = e.target;
+            while (target && !target.classList.contains('message')) {
+                if (target === document.body) break;
+                target = target.parentElement;
+            }
+            
+            if (target && target.classList.contains('message')) {
+                e.preventDefault(); // Prevent the context menu
+                setReplyTo(target);
+            }
+        });
+        
+        function leaveChat() {
+            socket.emit("leaveChat", { username, group: selectedGroup });
+            location.reload();
+        }
+        
+        // Handle window focus/blur for read receipts
+        window.addEventListener('focus', () => {
+            socket.emit('userActive', { username, group: selectedGroup });
+        });
+        
+        window.addEventListener('blur', () => {
+            socket.emit('userInactive', { username, group: selectedGroup });
+        });
+    </script>
+</body>
+</html>
